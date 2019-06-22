@@ -5,8 +5,15 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
 
-#define expand3(a, b, c, A, B) ((a) + (A)*((b) + (B)*(c)))
-#define expand4(a, b, c, d, A, B, C) ((a) + (A)*((b) + (B)*(c + (C)*(d))))
+template<typename T>
+static constexpr T expand(T hd){
+    return hd;
+}
+
+template<typename T, typename... Args>
+static constexpr T expand(T hd1, T hd2, Args... tl){
+    return hd1 + hd2 * expand(tl...);
+}
 
 const int X_BLOCK = 16;
 const int Y_BLOCK = 16;
@@ -47,15 +54,16 @@ void conv_cuda(double* out,
     int x = threadIdx.y + (blockDim.y * blockIdx.y);
     int y = threadIdx.z + (blockDim.z * blockIdx.z);
 
-    auto outIndex = expand3(y, x, k, H, W);
+    auto outIndex = expand(y, H, x, W, k);
+
     double sum = 0.0;
     
     #pragma unroll 4
     for(int c = 0; c < C; ++c){
         for(int j = 0; j < FH; ++j){
             for(int i=0; i < FW; ++i){
-                auto filterIndex = expand4(FH-1-j, FW-1-i, c, k, FH, FW, C);
-                auto imageIndex = expand3(y+j, x+i, c, W+2, H+2);
+                auto filterIndex = expand(FH - 1 - j, FH, FW - 1 - i, FW, c, C, k);
+                auto imageIndex = expand(y + j, W + 2, x + i, H + 2, c);
                 sum += (filter[filterIndex] * paddedImage[imageIndex]);
             }
         }            
@@ -81,37 +89,37 @@ void conv_cuda_tiled(double* out,
     extern __shared__ double tile[];
 
     for(int c = 0; c < C; ++c){
-        tile[expand3(tidy, tidx, c, Y_BOUND, X_BOUND)] = paddedImage[expand3(y, x, c, W+2, H+2)];
+        tile[ expand(tidy, Y_BOUND, tidx, X_BOUND, c) ] = paddedImage[ expand(y, W + 2, x, H + 2, c) ]; 
         // corner loads
         if(tidx == X_BLOCK - 1 && tidy == Y_BLOCK - 1){
             for(int xx = 0; xx < FW; ++xx){
                 for(int yy = 0; yy < FH; ++yy){
                     if(xx == 0 and yy == 0)
                         continue;
-                    tile[expand3(tidy+yy, tidx+xx, c, Y_BOUND, X_BOUND)] = paddedImage[expand3(y + yy, x + xx, c, W+2, H+2)];
+                    tile[ expand(tidy + yy, Y_BOUND, tidx + xx, X_BOUND, c) ] = paddedImage[ expand(y + yy, W + 2, x +xx, H + 2, c) ]; 
                 }   
             }
         }// edge loads
         else if(tidx == X_BLOCK - 1){
             for(int xx = 1; xx < FW; ++xx){
-                tile[expand3(tidy, tidx+xx, c, Y_BOUND, X_BOUND)] = paddedImage[expand3(y, x + xx, c, W+2, H+2)];
+                tile[ expand(tidy, Y_BOUND, tidx + xx, X_BOUND, c) ] = paddedImage[ expand(y, W + 2, x + xx, H + 2, c) ];
             }
         }else if(tidy == Y_BLOCK - 1){
             for(int yy = 1; yy < FH; ++yy){
-                tile[expand3(tidy+yy, tidx, c, Y_BOUND, X_BOUND)] = paddedImage[expand3(y + yy, x, c, W+2, H+2)];
+                tile[ expand(tidy + yy, Y_BOUND, tidx, X_BOUND, c) ] = paddedImage[ expand(y + yy, W + 2, x, H + 2, c) ];
             }
         }
     }
     __syncthreads();
 
-    auto outIndex = expand3(y, x, k, H, W);
+    auto outIndex = expand(y, H, x, W, k);
     double sum = 0.0;
     #pragma unroll 4
     for(int c = 0; c < C; ++c){
         for(int j = 0; j < FH; ++j){
             for(int i=0; i < FW; ++i){
-                auto filterIndex = expand4(FH-1-j, FW-1-i, c, k, FH, FW, C);
-                auto imageIndex = expand3(tidy+j, tidx+i, c, Y_BOUND, X_BOUND);
+                auto filterIndex = expand(FH - 1 - j, FH, FW - 1 - i, FW, c, C, k);
+                auto imageIndex = expand(tidy + j, Y_BOUND, tidx + i, X_BOUND, c);
                 sum += (filter[filterIndex] * tile[imageIndex]);
             }
         }
